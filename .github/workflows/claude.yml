@@ -1,0 +1,59 @@
+name: Claude Code (reusable)
+
+# One copy of the Claude Code job for all ten fairtier repos. Each repo holds a
+# thin `.github/workflows/claude.yml` that declares triggers and permissions and
+# then calls this — so "what Claude may do" is changed here, once, while "when
+# Claude wakes up" stays visible in the repo it affects.
+#
+# This repo is private, which only works because Settings -> Actions -> General
+# -> Access is set to "Accessible from repositories in the fairtier
+# organization". Setting that back to "Not accessible" breaks every caller, and
+# the failure surfaces in the caller repo rather than here. Note that nine of
+# the ten callers are public: a customer who forks one of them inherits a
+# workflow pointing at a repo they cannot read, and it errors until they delete
+# the file.
+
+on:
+  workflow_call:
+    secrets:
+      CLAUDE_CODE_OAUTH_TOKEN:
+        required: true
+
+jobs:
+  claude:
+    runs-on: ubuntu-latest
+
+    # Two @claude mentions on one PR would otherwise race each other while
+    # pushing to the same branch. Queue rather than cancel: an in-flight run may
+    # already have committed, and cancelling it leaves that half-done.
+    concurrency:
+      group: claude-${{ github.repository }}-${{ github.event.issue.number || github.event.pull_request.number }}
+      cancel-in-progress: false
+
+    # The body check is per-event on purpose. Checking `issue.body` regardless
+    # of event means every later comment on an issue that happens to contain
+    # "@claude" re-triggers the whole job, because `issue_comment` carries the
+    # issue body too.
+    #
+    # The association fallback chain is safe for all four events: `comment` is
+    # null outside the two comment events, `review` is null outside
+    # pull_request_review, so each event lands on its own author. The gate
+    # matters because `issue_comment` on a fork PR runs with this repo's write
+    # token.
+    if: |
+      (
+        (github.event_name == 'issues' && contains(github.event.issue.body, '@claude')) ||
+        ((github.event_name == 'issue_comment' || github.event_name == 'pull_request_review_comment') && contains(github.event.comment.body, '@claude')) ||
+        (github.event_name == 'pull_request_review' && contains(github.event.review.body, '@claude'))
+      ) &&
+      contains(fromJSON('["OWNER", "MEMBER", "COLLABORATOR"]'), github.event.comment.author_association || github.event.review.author_association || github.event.issue.author_association)
+
+    # A wedged agent otherwise bills the default six hours.
+    timeout-minutes: 30
+
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+
+      - uses: anthropics/claude-code-action@4036a180cf690f49529f5d8c79c998855287f590 # v1.0.230
+        with:
+          claude_code_oauth_token: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}
